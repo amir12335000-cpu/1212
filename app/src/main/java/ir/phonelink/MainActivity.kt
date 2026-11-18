@@ -17,17 +17,19 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
+
     private val prefs by lazy { getSharedPreferences("alzahra_settings", MODE_PRIVATE) }
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
+
     private lateinit var status: TextView
     private lateinit var root: LinearLayout
+
     private var first: EditText? = null
     private var last: EditText? = null
     private var major: EditText? = null
-    private var consent: CheckBox? = null
     private var waitingForStorage = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,182 +51,19 @@ class MainActivity : Activity() {
             setPadding(32, 28, 32, 28)
         }
 
-        fun label(t: String, size: Float = 16f) {
-            root.addView(TextView(this).apply {
-                text = t
+        fun label(text: String, size: Float = 16f) {
+            root.addView(TextView(this@MainActivity).apply {
+                this.text = text
                 textSize = size
                 setPadding(0, 10, 0, 10)
             })
         }
 
-        fun field(h: String, value: String = ""): EditText {
-            val e = EditText(this).apply {
-                hint = h
+        fun field(hint: String, value: String = ""): EditText {
+            val editText = EditText(this@MainActivity).apply {
+                this.hint = hint
                 setSingleLine(true)
                 setText(value)
             }
-            root.addView(e, LinearLayout.LayoutParams(-1, -2))
-            return e
-        }
-
-        fun button(t: String, f: () -> Unit) {
-            root.addView(Button(this).apply {
-                text = t
-                setOnClickListener { f() }
-            })
-        }
-
-        label("دانشگاه الزهرا", 25f)
-        status = TextView(this).apply {
-            textSize = 14f
-            setPadding(0, 8, 0, 14)
-        }
-        root.addView(status)
-
-        // مرحله ۱: مجوز دسترسی به فایل‌ها
-        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            waitingForStorage = true
-            label("مرحله ۱: دسترسی گسترده به فایل‌های مشترک", 19f)
-                   button("رفتن به تنظیمات دسترسی") {
-                try {
-                    startActivity(
-                        Intent(
-                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                            Uri.parse("package:$packageName")
-                        )
-                    )
-                } catch (_: Exception) {
-                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-                }
-            }
-            status.text = "پس از فعال‌کردن مجوز، به برنامه برگردید."
-            setContentView(root)
-            return
-        }
-
-        // مرحله ۲: ثبت‌نام (اگر هنوز ثبت نشده)
-        if (prefs.getString("device_token", null).isNullOrBlank()) {
-            label("مرحله ۲: مشخصات دانشجو", 19f)
-            first = field("نام")
-            last = field("نام خانوادگی")
-            major = field("رشته تحصیلی")
-
-            label("اتصال خودکار به سرور دانشگاه", 18f)
-            val configured = BuildConfig.SERVER_BASE_URL.trim().trimEnd('/')
-            label(
-                if (configured.isBlank())
-                    "آدرس ثابت سرور هنوز در نسخه برنامه تنظیم نشده است. پس از راه‌اندازی هاست، آدرس HTTPS در تنظیمات ساخت برنامه قرار می‌گیرد."
-                else
-                    "سرور دانشگاه پیکربندی شده است؛ برنامه هنگام ثبت‌نام خودکار متصل می‌شود."
-            )
-         
-                          )
-
-            }
-            root.addView(consent)
-
-            button("ثبت اطلاعات و اتصال خودکار") { enroll() }
-
-            status.text = if (configured.isBlank())
-                "اتصال تا زمان تنظیم آدرس ثابت سرور غیرفعال است."
-            else
-                "ابتدا مجوز را فعال کنید؛ سپس اطلاعات و رضایت را ثبت کنید."
-        } else {
-            // دستگاه قبلاً ثبت شده → اشتراک‌گذاری همیشه فعال
-            label("اشتراک‌گذاری دستگاه", 19f)
-            label("${prefs.getString("first_name", "")} ${prefs.getString("last_name", "")} — ${prefs.getString("major", "")}")
-            label("سرور: ${prefs.getString("server_url", "")}")
-            label("وضعیت: اشتراک‌گذاری به‌صورت خودکار فعال است.")
-
-            // همیشه فلگ را true نگه دار و سرویس را روشن کن
-            prefs.edit().putBoolean("sharing_enabled", true).apply()
-            startSharing()
-
-            status.text = "مدیر دانشگاه باید دستگاه جدید را در داشبورد تأیید کند."
-        }
-
-        setContentView(root)
-    }
-
-    private fun enroll() {
-        val a = first?.text.toString().trim()
-        val b = last?.text.toString().trim()
-        val c = major?.text.toString().trim()
-        val u = BuildConfig.SERVER_BASE_URL.trim().trimEnd('/')
-
-        if (a.isBlank() || b.isBlank() || c.isBlank()) {
-            status.text = "نام، نام خانوادگی و رشته را کامل کنید."
-            return
-        }
-        if (!u.startsWith("https://")) {
-            status.text = "آدرس ثابت HTTPS سرور هنوز در نسخه برنامه تنظیم نشده است."
-            return
-        }
-        if (consent?.isChecked != true) {
-            status.text = "برای فعال‌سازی، رضایت آگاهانه را تأیید کنید."
-            return
-        }
-
-        val id = prefs.getString("device_id", null) ?: UUID.randomUUID().toString()
-        val body = JSONObject()
-            .put("deviceId", id)
-            .put("firstName", a)
-            .put("lastName", b)
-            .put("major", c)
-            .toString()
-            .toRequestBody("application/json".toMediaType())
-
-        status.text = "در حال ثبت امن دستگاه…"
-
-        http.newCall(
-            Request.Builder()
-                .url("$u/api/phone/enroll")
-                .post(body)
-                .build()
-        ).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                runOnUiThread { status.text = "ثبت ناموفق: ${e.message}" }
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                val txt = response.body?.string().orEmpty()
-                runOnUiThread {
-                    if (response.isSuccessful) {
-                        val j = JSONObject(txt)
-                        prefs.edit()
-                            .putString("device_id", id)
-                            .putString("device_token", j.getString("token"))
-                            .putString("server_url", u)
-                            .putString("first_name", a)
-                            .putString("last_name", b)
-                            .putString("major", c)
-                            .putBoolean("sharing_enabled", true)
-                            .apply()
-                        startSharing()
-                        render()
-                    } else {
-                        status.text = "سرور ثبت دستگاه را نپذیرفت: $txt"
-                    }
-                }
-            }
-        })
-    }
-
-    private fun startSharing() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-           
-        }
-
-        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            render()
-            return
-        }
-
-        prefs.edit().putBoolean("sharing_enabled", true).apply()
-        val i = Intent(this, ShareService::class.java)
-        startService(i)   // دیگر از startForegroundService استفاده نمی‌کنیم
-    }
-}
+            root.addView(
+                editText, LinearLayout.LayoutParams(
