@@ -10,7 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    env:
+      SERVER_BASE_URL: "https://1212.gerdoo.app"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
