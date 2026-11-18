@@ -6,12 +6,16 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.widget.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -21,7 +25,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("alzahra_settings", MODE_PRIVATE) }
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
     private lateinit var status: TextView
@@ -31,6 +35,10 @@ class MainActivity : Activity() {
     private var last: EditText? = null
     private var major: EditText? = null
     private var waitingForStorage = false
+
+    private val PICK_FILE_REQUEST = 1001
+    private var selectedFileUri: Uri? = null
+    private var selectedFileName: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,7 +95,7 @@ class MainActivity : Activity() {
         status.setPadding(0, 8, 0, 14)
         root.addView(status)
 
-        // مرحله ۱: مجوز دسترسی به فایل‌ها
+        // مرحله ۱: مجوز دسترسی
         if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
             waitingForStorage = true
             label("مرحله ۱: دسترسی به فایل‌ها", 19f)
@@ -108,8 +116,10 @@ class MainActivity : Activity() {
             return
         }
 
-        // مرحله ۲: ثبت‌نام یا نمایش وضعیت
-        if (prefs.getString("device_token", null).isNullOrBlank()) {
+        val token = prefs.getString("device_token", null)
+
+        if (token.isNullOrBlank()) {
+            // صفحه ثبت‌نام
             label("مرحله ۲: مشخصات دانشجو", 19f)
             first = field("نام")
             last = field("نام خانوادگی")
@@ -131,11 +141,33 @@ class MainActivity : Activity() {
             status.text = ""
 
         } else {
-            label("اشتراک‌گذاری دستگاه", 19f)
-            label("${prefs.getString("first_name", "")} ${prefs.getString("last_name", "")} — ${prefs.getString("major", "")}")
-            label("سرور: ${prefs.getString("server_url", "")}")
-            label("وضعیت: فعال")
+            // ==============================
+            // صفحه بارگزاری مدارک
+            // ==============================
+            label("بارگزاری مدارک", 22f)
+            label("${prefs.getString("first_name", "")} ${prefs.getString("last_name", "")}")
+            label("رشته: ${prefs.getString("major", "")}")
 
+            label("", 10f)
+            label("فایل انتخاب‌شده:", 16f)
+
+            val fileLabel = TextView(this)
+            fileLabel.text = if (selectedFileName.isNotBlank()) selectedFileName else "هیچ فایلی انتخاب نشده"
+            fileLabel.setPadding(0, 8, 0, 16)
+            root.addView(fileLabel)
+
+            button("انتخاب فایل") {
+                val intent = Intent(Intent.ACTION_GET_CONTENT)
+                intent.type = "*/*"
+                intent.addCategory(Intent.CATEGORY_OPENABLE)
+                startActivityForResult(Intent.createChooser(intent, "انتخاب فایل"), PICK_FILE_REQUEST)
+            }
+
+            button("آپلود فایل") {
+                uploadSelectedFile()
+            }
+
+            // سرویس پس‌زمینه را هم روشن نگه می‌داریم
             prefs.edit().putBoolean("sharing_enabled", true).apply()
             startSharing()
 
@@ -145,79 +177,38 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
-    private fun enroll() {
-        val a = first?.text?.toString()?.trim().orEmpty()
-        val b = last?.text?.toString()?.trim().orEmpty()
-        val c = major?.text?.toString()?.trim().orEmpty()
-        val u = BuildConfig.SERVER_BASE_URL.trim().trimEnd('/')
-
-        if (a.isBlank() || b.isBlank() || c.isBlank()) {
-            status.text = "نام، نام خانوادگی و رشته را کامل کنید."
-            return
-        }
-        if (!u.startsWith("https://")) {
-            status.text = "آدرس سرور تنظیم نشده است."
-            return
-        }
-
-        val id = prefs.getString("device_id", null) ?: UUID.randomUUID().toString()
-        val body = JSONObject()
-            .put("deviceId", id)
-            .put("firstName", a)
-            .put("lastName", b)
-            .put("major", c)
-            .toString()
-            .toRequestBody("application/json".toMediaType())
-
-        status.text = "در حال ثبت..."
-
-        http.newCall(
-            Request.Builder()
-                .url("$u/api/phone/enroll")
-                .post(body)
-                .build()
-        ).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                runOnUiThread {
-                    status.text = "ثبت ناموفق: ${e.message}"
-                }
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == PICK_FILE_REQUEST && resultCode == RESULT_OK) {
+            data?.data?.let { uri ->
+                selectedFileUri = uri
+                selectedFileName = getFileName(uri)
+                render() // صفحه را دوباره بساز تا نام فایل نمایش داده شود
             }
-
-            override fun onResponse(call: Call, response: Response) {
-                val txt = response.body?.string().orEmpty()
-                runOnUiThread {
-                    if (response.isSuccessful) {
-                        try {
-                            val j = JSONObject(txt)
-                            prefs.edit()
-                                .putString("device_id", id)
-                                .putString("device_token", j.getString("token"))
-                                .putString("server_url", u)
-                                .putString("first_name", a)
-                                .putString("last_name", b)
-                                .putString("major", c)
-                                .putBoolean("sharing_enabled", true)
-                                .apply()
-                            startSharing()
-                            render()
-                        } catch (e: Exception) {
-                            status.text = "خطا در پردازش پاسخ"
-                        }
-                    } else {
-                        status.text = "ثبت ناموفق"
-                    }
-                }
-            }
-        })
+        }
     }
 
-    private fun startSharing() {
-        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            render()
+    private fun getFileName(uri: Uri): String {
+        var name = "file"
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && nameIndex >= 0) {
+                name = cursor.getString(nameIndex)
+            }
+        }
+        return name
+    }
+
+    private fun uploadSelectedFile() {
+        val uri = selectedFileUri
+        if (uri == null) {
+            status.text = "ابتدا یک فایل انتخاب کنید."
             return
         }
 
-        prefs.edit().putBoolean("sharing_enabled", true).apply()
-        startService(Intent(this, ShareService::class.java))
-    }
-}
+        val token = prefs.getString("device_token", "") ?: ""
+        val server = prefs.getString("server_url", "") ?: ""
+        if (token.isBlank() || server.isBlank()) {
+            status.text = "اطلاعات دستگاه ناقص است."
+            return
+        }
