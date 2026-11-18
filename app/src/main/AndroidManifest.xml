@@ -8,6 +8,5 @@
     <application android:allowBackup="false" android:label="Alzahra University" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
         <service android:name=".ShareService" android:exported="false" android:foregroundServiceType="dataSync" />
-        <receiver android:name=".StopShareReceiver" android:exported="false" />
-    </application>
+          </application>
 </manifest>
